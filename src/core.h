@@ -78,7 +78,24 @@ bool is_digit(char c);
 
 bool is_power_of_two(usize n);
 
+// Defer statement
+// https://www.gingerbill.org/article/2015/08/19/defer-in-cpp/
+template <typename F>
+struct privDefer {
+	F f;
+	privDefer(F f) : f(f) {}
+	~privDefer() { f(); }
+};
 
+template <typename F>
+privDefer<F> defer_func(F f) {
+	return privDefer<F>(f);
+}
+
+#define DEFER_1(x, y) x##y
+#define DEFER_2(x, y) DEFER_1(x, y)
+#define DEFER_3(x)    DEFER_2(x, __COUNTER__)
+#define defer(code)   auto DEFER_3(_defer_) = defer_func([&](){code;})
 
 
 // Files
@@ -160,6 +177,17 @@ template<typename T>
 Vector2<T> vector2_add(Vector2<T> a, Vector2<T> b) {
   return make_vector2(a.x + b.x, a.y + b.y);
 }
+
+template<typename T>
+Vector2<T> vector2_mul(Vector2<T> a, Vector2<T> b) {
+  return make_vector2(a.x * b.x, a.y * b.y);
+}
+
+template<typename T>
+Vector2<T> vector2_mul(Vector2<T> a, T b) {
+  return make_vector2(a.x * b, a.y * b);
+}
+
 
 
 template<typename T>
