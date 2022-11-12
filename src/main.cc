@@ -2,11 +2,13 @@
 #include <SDL_ttf.h>
 
 #include <algorithm>
+#include <pstl/glue_algorithm_defs.h>
 
 #include "SDL_keyboard.h"
 #include "SDL_keycode.h"
 #include "SDL_render.h"
 #include "SDL_scancode.h"
+#include "SDL_timer.h"
 #include "core.h"
 
 
@@ -32,7 +34,8 @@ fill_rect(SDL_Renderer* renderer, Vector2<int> position, Vector2<int> size, Colo
   SDL_RenderFillRect(renderer, &rect);
 }
 
-void draw_text(SDL_Renderer* renderer, TTF_Font* font, Vector2<int> position, const char* text, u8 r = 255, u8 g = 255, u8 b = 255, u8 _a = 255) {
+void
+draw_text(SDL_Renderer* renderer, TTF_Font* font, Vector2<int> position, const char* text, u8 r = 255, u8 g = 255, u8 b = 255, u8 _a = 255) {
   SDL_Color sdl_colour = {r, g, b};
   SDL_Surface* surface = TTF_RenderText_Solid(font, text, sdl_colour);
   SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
@@ -65,6 +68,11 @@ u32  tile_width = 60;
 u32  tile_height = 60;
 
 
+auto now = SDL_GetPerformanceCounter();
+auto last = now;
+f32  delta_time = 0.0f;
+f32  current_frame_time = 0.0f;
+
 u64  total_frames = 0;
 u64  total_ticks = 0;
 f32  default_frame_time = 1.0f;
@@ -78,12 +86,14 @@ enum class GameState {
 
 GameState game_state = GameState::playing;
 
-bool is_in_bounds(Coordinate coordinate) {
+bool
+is_in_bounds(Coordinate coordinate) {
   return coordinate.x >= 0 && coordinate.x < grid_width &&
          coordinate.y >= 0 && coordinate.y < grid_height;
 }
 
-void next_tetromino(Tetromino& tetromino) {
+void
+next_tetromino(Tetromino& tetromino) {
   tetromino.coordinate = make_vector2(3, 0);
   tetromino.last_tick = 0;
   tetromino.pieces.clear();
@@ -185,6 +195,98 @@ rotate_tetromino(Tetromino& tetromino, Vec<LockedIn>& locked_in) {
   return true;
 }
 
+struct LineBeingCleared {
+  i32 y_coordinate = 0;
+  f32 start_time = 0.0f;
+  f32 t = 0.0f;
+};
+
+Vec<LineBeingCleared> being_cleared = {};
+f32 clear_t = 0.0f;
+f32 clear_animation_time = 0.5f;
+
+void
+start_clear(u32 y) {
+  being_cleared.push_back({(i32)y, current_frame_time, 0.0f});
+}
+
+
+void
+clear_line(Vec<LockedIn>& locked_in, u32 y) {
+  auto dummy = std::remove_if(locked_in.begin(), locked_in.end(), [&](LockedIn& locked) {
+    return locked.coordinate.y == y;
+  });
+
+  auto dummy2 = std::remove_if(being_cleared.begin(), being_cleared.end(), [&](LineBeingCleared& line) {
+    return line.y_coordinate == y;
+  });
+
+  for (auto& locked : locked_in) {
+    locked.coordinate.y += 1;
+  }
+}
+
+
+u32
+try_to_move_tetromino(Tetromino& tetromino, Vec<LockedIn>& locked_in) {
+  auto drop_offset = make_vector2(0, 1);
+  auto can_drop = tetromino_fits(tetromino, drop_offset, locked_in);
+  u32 score = 0;
+
+  if ((float)(SDL_GetTicks() - tetromino.last_tick) > frame_time * 1000.0f) {
+    if (!can_drop) {
+      for (auto& piece : tetromino.pieces) {
+        LockedIn locked;
+        locked.coordinate = vector2_add(tetromino.coordinate, piece);
+        locked.colour = make_colour(0.2f, 0.1f, 0.3f, 1.0f);
+        locked_in.push_back(locked);
+        score += 1; // +1 score for every piece locked in.
+      }
+
+      next_tetromino(tetromino);
+    }
+    else {
+      tetromino.coordinate = vector2_add(tetromino.coordinate, drop_offset);
+      score += 1; // +1 score for every time the tetromino moves down.
+    }
+
+    tetromino.last_tick = SDL_GetTicks();
+
+    // Check if you can clear any lines
+    auto lines_cleared_so_far = 0;
+    if (!locked_in.empty()) {
+      for (int y = grid_height-1; y >= 0; --y) {
+        bool can_clear_line = true;
+        for (int x = 0; x < grid_width; ++x) {
+          auto piece_exists = locked_in.end() != std::find_if(locked_in.begin(), locked_in.end(), [&](LockedIn& locked) {
+            return vector2_equal(locked.coordinate, make_vector2(x, y));
+          });
+
+          if (!piece_exists) can_clear_line = false;
+        }
+
+        if (can_clear_line) {
+          if (std::find_if(being_cleared.begin(), being_cleared.end(), [&](auto line) { return line.y_coordinate == y; }) == being_cleared.end()) {
+            start_clear(y);
+          }
+          lines_cleared_so_far += 1;
+
+          score += grid_width * 10 * lines_cleared_so_far; 
+        }
+      }
+    }
+
+    // Check if the game is over
+    for (auto& locked : locked_in) {
+      if (locked.coordinate.y == 0) {
+        game_state = GameState::game_over;
+      }
+    }
+  }
+
+  return score;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -221,116 +323,73 @@ main(int argc, char *argv[])
       }
       else if (event.type == SDL_KEYDOWN) {
         switch (event.key.keysym.sym) {
-          case SDLK_ESCAPE: {
-            running = false;
-          } break;
+        case SDLK_ESCAPE: {
+          running = false;
+        } break;
 
-          case SDLK_s: {
-            frame_time = default_frame_time / speed_up_factor;
-          } break;
+        case SDLK_s: {
+          frame_time = default_frame_time / speed_up_factor;
+        } break;
 
-          case SDLK_a: {
-            if (game_state == GameState::playing) {
-              tetromino.coordinate.x -= 1;
-
-              if (!tetromino_fits(tetromino, make_vector2(0, 0), locked_in)) {
-                tetromino.coordinate.x += 1;
-              }
-            }
-          } break;
-
-          case SDLK_d: {
-            if (game_state == GameState::playing) {
+        case SDLK_a: {
+          if (game_state == GameState::playing) {
+            tetromino.coordinate.x -= 1;
+            if (!tetromino_fits(tetromino, make_vector2(0, 0), locked_in)) {
               tetromino.coordinate.x += 1;
-              if (!tetromino_fits(tetromino, make_vector2(0,0), locked_in)) {
-                tetromino.coordinate.x -= 1;
-              }
             }
-          } break;
+          }
+        } break;
 
-          case SDLK_SPACE: {
-            if (game_state == GameState::playing) {
-              auto did_rotate = rotate_tetromino(tetromino, locked_in);
+        case SDLK_d: {
+          if (game_state == GameState::playing) {
+            tetromino.coordinate.x += 1;
+            if (!tetromino_fits(tetromino, make_vector2(0,0), locked_in)) {
+              tetromino.coordinate.x -= 1;
             }
-          } break;
+          }
+        } break;
+
+        case SDLK_SPACE: {
+          if (game_state == GameState::playing) {
+            auto did_rotate = rotate_tetromino(tetromino, locked_in);
+          }
+        } break;
         }
       }
       else if (event.type == SDL_KEYUP) {
         switch (event.key.keysym.sym) {
-          case SDLK_s: {
-            frame_time = default_frame_time;
-          }
+        case SDLK_s: {
+          frame_time = default_frame_time;
+        } break;
         }
       }
     }
 
+    last = now;
+    now = SDL_GetPerformanceCounter();
+    delta_time = (f32)((now - last) * 1000 / (f32)SDL_GetPerformanceFrequency());
+    current_frame_time += delta_time;
 
     // Try to move the tetromino
-    auto drop_offset = make_vector2(0, 1);
-    auto can_drop = tetromino_fits(tetromino, drop_offset, locked_in);
+    score += try_to_move_tetromino(tetromino, locked_in);
 
-    if ((float)(SDL_GetTicks() - tetromino.last_tick) > frame_time * 1000.0f) {
-      if (!can_drop) {
-        for (auto& piece : tetromino.pieces) {
-          LockedIn locked;
-          locked.coordinate = vector2_add(tetromino.coordinate, piece);
-          locked.colour = make_colour(0.2f, 0.1f, 0.3f, 1.0f);
-          locked_in.push_back(locked);
-          score += 1;
-        }
-
-        next_tetromino(tetromino);
-      }
-      else {
-        tetromino.coordinate = vector2_add(tetromino.coordinate, drop_offset);
+    // Update the clear time
+    clear_t += delta_time;
+    for (auto& line_to_clear : being_cleared)  {
+      if (current_frame_time - line_to_clear.start_time >= clear_animation_time) {
+        clear_line(locked_in, line_to_clear.y_coordinate);
       }
 
-      tetromino.last_tick = SDL_GetTicks();
-
-      // Check if you can clear any lines
-      auto lines_cleared_so_far = 0;
-      if (!locked_in.empty()) {
-        for (int y = grid_height-1; y >= 0; --y) {
-          bool can_clear_line = true;
-          for (int x = 0; x < grid_width; ++x) {
-            auto piece_exists = locked_in.end() != std::find_if(locked_in.begin(), locked_in.end(), [&](LockedIn& locked) {
-              return vector2_equal(locked.coordinate, make_vector2(x, y));
-            });
-
-            if (!piece_exists) can_clear_line = false;
-          }
-
-          if (can_clear_line) {
-            lines_cleared_so_far += 1;
-
-            auto dummy = std::remove_if(locked_in.begin(), locked_in.end(), [&](LockedIn& locked) {
-              return locked.coordinate.y == y;
-            });
-
-            score += grid_width * 10 * lines_cleared_so_far;
-
-            for (auto& locked : locked_in) {
-              locked.coordinate.y += 1;
-            }
-          }
-        }
-      }
-
-      // Check if the game is over
-      for (auto& locked : locked_in) {
-        if (locked.coordinate.y == 0) {
-          game_state = GameState::game_over;
-        }
-      }
+      line_to_clear.t = (current_frame_time - line_to_clear.start_time) / clear_animation_time;
     }
 
 
     // Draw
-    int window_width, window_height;
+    i32 window_width, window_height;
     SDL_GetWindowSize(window, &window_width, &window_height);
 
-    int tile_width = window_width/grid_width;
-    int tile_height = window_height/grid_height;
+    i32 tile_width = window_width/grid_width;
+    i32 tile_height = window_height/grid_height;
 
     SDL_SetRenderDrawColor(renderer, 255, 0, 255, SDL_ALPHA_OPAQUE);
     SDL_RenderClear(renderer);

@@ -6,7 +6,7 @@ project(metris)
 
 set(CMAKE_CXX_STANDARD 20)
 
-set(CXX_COMPILER_FLAGS "-Wall -Wextra -Werror -Wswitch-enum -Wconversion")
+set(CXX_COMPILER_FLAGS "-Wall -Wextra -Werror -Wswitch-enum -Wconversion -Wunused")
 
 pkg_search_module(SDL2 REQUIRED sdl2)
 pkg_search_module(SDL2TTF REQUIRED SDL2_ttf)
