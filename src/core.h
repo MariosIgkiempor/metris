@@ -188,6 +188,11 @@ Vector2<T> vector2_mul(Vector2<T> a, T b) {
   return make_vector2(a.x * b, a.y * b);
 }
 
+template<typename T>
+Vector2<T> vector2_div(Vector2<T> a, T b) {
+  return make_vector2(a.x / b, a.y / b);
+}
+
 
 
 template<typename T>
